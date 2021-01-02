@@ -31,20 +31,27 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  """
 import rospy
-import numpy as np
 import tf
 
-from math import pi, sqrt
+from math import pi, sqrt, sin, cos, atan
 from std_msgs.msg import Float32
 from std_srvs.srv import Empty, EmptyResponse
 from geometry_msgs.msg import Vector3, Point, PoseStamped, TwistStamped, PointStamped
 from mavros_msgs.msg import PositionTarget, State
 from mavros_msgs.srv import CommandBool, SetMode
 from mavros_apriltag_tracking.srv import PIDGains, PIDGainsResponse
+from mavros_msgs.msg import MountControl
+
+from apriltag_ros.msg import AprilTagDetectionArray
+from image_geometry import PinholeCameraModel
+from sensor_msgs.msg import CameraInfo
+
+import numpy as np
+
 
 class FCUModes:
     def __init__(self):
-	    pass    
+	    pass
 
     def setArm(self):
         rospy.wait_for_service('mavros/cmd/arming')
@@ -139,7 +146,7 @@ class PositionController:
         self.local_vx_cmd_ = 0.0
         self.local_vy_cmd_ = 0.0
         self.local_vz_cmd_ = 0.0
-        
+
         # Maximum horizontal velocity (m/s)
         self.vXYMAX_ = rospy.get_param('~horizontal_controller/vMAX', 1.0)
         # Maximum upward velocity (m/s)
@@ -154,9 +161,9 @@ class PositionController:
         # Subscribe to drone FCU state
         rospy.Subscriber('mavros/state', State, self.cbFCUstate)
 
-        # Service for modifying horizontal PI controller gains 
+        # Service for modifying horizontal PI controller gains
         rospy.Service('horizontal_controller/pid_gains', PIDGains, self.setHorizontalPIDCallback)
-        # Service for modifying vertical PI controller gains 
+        # Service for modifying vertical PI controller gains
         rospy.Service('vertical_controller/pid_gains', PIDGains, self.setVerticalPIDCallback)
 
     def setHorizontalPIDCallback(self, req):
@@ -206,7 +213,7 @@ class PositionController:
 
         # Horizontal velocity constraints
         vel_magnitude = sqrt(self.body_vx_cmd_**2 + self.body_vy_cmd_**2)
-        if vel_magnitude > self.vXYMAX_ : # anti-windup scaling      
+        if vel_magnitude > self.vXYMAX_ : # anti-windup scaling
             scale = self.vXYMAX_/vel_magnitude
             self.body_vx_cmd_ = self.body_vx_cmd_*scale
             self.body_vy_cmd_ = self.body_vy_cmd_*scale
@@ -216,7 +223,7 @@ class PositionController:
                 self.ey_int_ = self.ey_int_ + self.ey_
 
         # Vertical velocity constraints
-        if self.body_vz_cmd_ > self.vUpMAX_ : # anti-windup scaling      
+        if self.body_vz_cmd_ > self.vUpMAX_ : # anti-windup scaling
             self.body_vz_cmd_ = self.vUpMAX_
         elif self.body_vz_cmd_ < -self.vDownMAX_:
             self.body_vz_cmd_ = -self.vDownMAX_
@@ -251,6 +258,14 @@ class Commander:
         # Yaw setpoint by user (degrees); will be converted to radians before it's published
         self.yaw_setpoint_ = 0.0
 
+        # Camera setpoint
+        self.cam_setpoint_ = MountControl()
+
+        # Camera setpoint by user (degrees)
+        self.cam_pitch_setpoint_ = -90.0
+        self.cam_roll_setpoint_ = 0.0
+        self.cam_yaw_setpoint_ = 0.0
+
         # Current drone position (local frame)
         self.drone_pos_ = Point()
 
@@ -260,6 +275,9 @@ class Commander:
         # setpoint publisher (velocity to Pixhawk)
         self.setpoint_pub_ = rospy.Publisher('mavros/setpoint_raw/local', PositionTarget, queue_size=10)
 
+        # camera setpoint publisher
+        self.cam_setpoint_pub_ = rospy.Publisher('/mavros/mount_control/orientation', MountControl, queue_size = 10)
+
         # Subscriber for user setpoints (body velocity)
         #rospy.Subscriber('setpoint/body_vel', Vector3, self.velSpCallback)
 
@@ -268,6 +286,9 @@ class Commander:
 
         # Subscriber for user setpoints (yaw in degrees)
         rospy.Subscriber('setpoint/yaw_deg', Float32, self.yawSpCallback)
+
+        # Subscriber for camera setpoints (orientation in degrees)
+        rospy.Subscriber('/mavros/mount_control/command', MountControl, self.camSpCallback)
 
         # Subscriber to current drone's position
         rospy.Subscriber('mavros/local_position/pose', PoseStamped, self.dronePosCallback)
@@ -309,7 +330,7 @@ class Commander:
     def armAndOffboard(self, req):
         self.fcu_mode_.setArm()
         self.fcu_mode_.setOffboardMode()
-        
+
         return EmptyResponse()
 
     def dronePosCallback(self, msg):
@@ -326,7 +347,7 @@ class Commander:
         self.vel_setpoint_.z = msg.z
 
         self.setBodyVelMask()
-    
+
     def posSpCallback(self, msg):
         """
         Position setpoint callback
@@ -343,6 +364,13 @@ class Commander:
         """
         self.yaw_setpoint_ = msg.data
 
+    def camSpCallback(self, msg):
+        """
+        Camera orientation setpoint callback
+        """
+        self.cam_setpoint_.pitch = msg.pitch
+        self.cam_setpoint_.roll = msg.roll
+        self.cam_setpoint_.yaw = msg.yaw
 
     def setLocalPositionMask(self):
         """
@@ -390,6 +418,54 @@ class Commander:
 
         self.setpoint_pub_.publish(self.setpoint_)
 
+
+    def publishCamSetpoint(self):
+        self.cam_setpoint_.header.stamp = rospy.Time.now()
+
+        self.cam_setpoint_.pitch = self.cam_pitch_setpoint_
+        self.cam_setpoint_.roll = self.cam_roll_setpoint_
+        self.cam_setpoint_.yaw = self.cam_yaw_setpoint_
+
+        self.cam_setpoint_pub_.publish(self.cam_setpoint_)
+#####################################################################################
+"""
+"""
+class TagPixel:
+    def __init__(self):
+        rospy.Subscriber('tag_detections', AprilTagDetectionArray, self.TagPoseCallback)
+        rospy.Subscriber('cgo3_camera/camera_info', CameraInfo, self.TagePixelCallback)
+        self.pos_x = 0.0
+        self.pos_y = 0.0
+        self.pos_z = 0.0
+
+        self.p_image = ()
+        self.valid = False
+
+        self.x_c = 0.0
+        self.y_c = 0.0
+
+        self.height = 0.0
+        self.width = 0.0
+
+    def TagPoseCallback(self, msg):
+        if len(msg.detections) > 0:
+            self.valid = True
+        if self.valid:
+            self.pos_x = -msg.detections[0].pose.pose.pose.position.y
+            self.pos_y = -msg.detections[0].pose.pose.pose.position.z
+            self.pos_z = msg.detections[0].pose.pose.pose.position.x
+
+    def TagePixelCallback(self, msg):
+        self.pcm = PinholeCameraModel()
+        self.pcm.fromCameraInfo(msg)
+        self.p_image = np.nan_to_num(self.pcm.project3dToPixel((self.pos_x, self.pos_y, self.pos_z)))
+
+        self.x_c = msg.K[2]
+        self.y_c = msg.K[5]
+
+        self.height = msg.height
+        self.width = msg.width
+        # rospy.loginfo("Pixel position is u = %s, v = %s", self.p_image[0], self.p_image[1])
 #####################################################################################
 """
 Provides methods to track a point in both body and local frames.
@@ -418,6 +494,9 @@ class Tracker:
 
         # Controller object to calculate velocity commands
         self.controller_ = PositionController()
+
+        # Tag Pixel
+        self.tagpxl_ = TagPixel()
 
         # Subscriber for user setpoints (local position)
         rospy.Subscriber('setpoint/local_pos', Point, self.localPosSpCallback)
@@ -484,7 +563,7 @@ class Tracker:
         localVelErr_msg.point.x = self.commander_.setpoint_.velocity.x - self.commander_.local_vel_.twist.linear.x
         localVelErr_msg.point.y = self.commander_.setpoint_.velocity.y - self.commander_.local_vel_.twist.linear.y
         localVelErr_msg.point.z = self.commander_.setpoint_.velocity.z - self.commander_.local_vel_.twist.linear.z
-        
+
         self.localVel_err_pub_.publish(localVelErr_msg)
 
         # Body velocity errors
@@ -518,20 +597,267 @@ class Tracker:
 
         self.relativePos_err_pub_.publish(relPosErr_msg)
 
+
+class DecisionMaking:
+    def __init__(self):
+        self.method = 'No Game theory'
+        self.uav_psi = 0.0
+        self.uav_theta = 0.0
+        self.cam_psi = 0.0
+        self.cam_theta = 0.0
+
+        self.BI = np.zeros((1, 2))
+
+        self.LeftPlayer = 1000 * np.ones((4, 4))
+        self.RightPlayer = 1000 * np.ones((4, 4))
+        self.L_Theta = np.zeros((4, 4))
+        self.R_Theta = np.zeros((4, 4))
+
+    def BackwardInduction(self, matrix1, matrix2, whois):
+        i = 1
+        j = 1
+        counter = 0
+        Nextindex1 = np.zeros((8, 2))
+        Nextindex2 = np.zeros((6, 2))
+        if whois == 1:
+            Player2matrix = matrix2.copy()
+            Player1matrix = matrix1.copy()  # leader
+        elif whois == 2:
+            Player2matrix = matrix1.copy()
+            Player1matrix = matrix2.copy()  # leader
+    #########################################################
+        # First Quarter
+        if Player2matrix[i, j] < Player2matrix[i, j - 1]:
+            Nextindex1[counter, :] = [i, j]
+        else:
+            Nextindex1[counter, :] = [i, j - 1]
+
+        if Player2matrix[i - 1, j] < Player2matrix[i - 1, j - 1]:
+            Nextindex2[counter, :] = [i - 1, j]
+        else:
+            Nextindex2[counter, :] = [i - 1, j - 1]
+
+        counter += 1
+    #########################################################
+        # Second Quarter
+        if Player2matrix[i, j + 2] < Player2matrix[i, j + 1]:
+            Nextindex1[counter, :] = [i, j + 2]
+        else:
+            Nextindex1[counter, :] = [i, j + 1]
+
+        if Player2matrix[i - 1, j + 2] < Player2matrix[i - 1, j + 1]:
+            Nextindex2[counter, :] = [i - 1, j + 2]
+        else:
+            Nextindex2[counter, :] = [i - 1, j + 1]
+
+        counter += 1
+    #########################################################
+        # Third Quarter
+        if Player2matrix[i + 2, j] < Player2matrix[i + 2, j - 1]:
+            Nextindex1[counter, :] = [i + 2, j]
+        else:
+            Nextindex1[counter, :] = [i + 2, j - 1]
+
+        if Player2matrix[i + 1, j] < Player2matrix[i + 1, j - 1]:
+            Nextindex2[counter, :] = [i + 1, j]
+        else:
+            Nextindex2[counter, :] = [i + 1, j - 1]
+
+        counter += 1
+    #########################################################
+        # Fourth Quarter
+        if Player2matrix[i + 2, j + 2] < Player2matrix[i + 2, j + 1]:
+            Nextindex1[counter, :] = [i + 2, j + 2]
+        else:
+            Nextindex1[counter, :] = [i + 2, j + 1]
+
+        if Player2matrix[i + 1, j + 2] < Player2matrix[i + 1, j + 1]:
+            Nextindex2[counter, :] = [i + 1, j + 2]
+        else:
+            Nextindex2[counter, :] = [i + 1, j + 1]
+
+        counter += 1
+    #########################################################
+        # Second Step
+        for k in range(0, 3, 2):
+            l1 = Nextindex1[k, 0]
+            r1 = Nextindex1[k, 1]
+
+            l2 = Nextindex2[k, 0]
+            r2 = Nextindex2[k, 1]
+
+            if Player1matrix[int(l1), int(r1)] < Player1matrix[int(l2), int(r2)]:
+                Nextindex1[counter, :] = Nextindex1[k, :]
+            else:
+                Nextindex1[counter, :] = Nextindex2[k, :]
+    #########################################################
+            l1 = Nextindex1[k + 1, 0]
+            r1 = Nextindex1[k + 1, 1]
+
+            l2 = Nextindex2[k + 1, 0]
+            r2 = Nextindex2[k + 1, 1]
+
+            if Player1matrix[int(l1), int(r1)] < Player1matrix[int(l2), int(r2)]:
+                Nextindex2[counter, :] = Nextindex1[k + 1, :]
+            else:
+                Nextindex2[counter, :] = Nextindex2[k + 1, :]
+            counter += 1
+    #########################################################
+        # Third Step
+        for n in range(4, 6):
+            l1 = Nextindex1[n, 0]
+            r1 = Nextindex1[n, 1]
+
+            l2 = Nextindex2[n, 0]
+            r2 = Nextindex2[n, 1]
+
+            if Player2matrix[int(l1), int(r1)] < Player2matrix[int(l2), int(r2)]:
+                Nextindex1[counter, :] = Nextindex1[n, :]
+            else:
+                Nextindex1[counter, :] = Nextindex2[n, :]
+            counter += 1
+    #########################################################
+        # Fourth Step
+        l1 = Nextindex1[6, 0]
+        r1 = Nextindex1[6, 1]
+
+        l2 = Nextindex1[7, 0]
+        r2 = Nextindex1[7, 1]
+
+        if Player1matrix[int(l1), int(r1)] < Player1matrix[int(l2), int(r2)]:
+            self.BI = Nextindex1[6, :]
+        else:
+            self.BI = Nextindex1[7, :]
+
+    def decision(self, uavPsi, uavTheta, camPsi, camTheta, x_err, y_err):
+        if self.method == 'No Game theory':
+            self.uav_psi = uavPsi
+            self.uav_theta = uavTheta
+            self.cam_psi = camPsi
+            self.cam_theta = camTheta
+
+        elif self.method == 'Game theory 1':
+            # Camera (Row Player) strategies
+            if x_err > 0 and y_err < 0: # L U (Picture 1'st Quarter)
+                row = 0
+            elif x_err > 0 and y_err > 0: # L D (Picture 4'th Quarter)
+                row = 1
+            elif x_err < 0 and y_err < 0: # R U (Picture 2'nd Quarter)
+                row = 2
+            elif x_err < 0 and y_err > 0: # R D (Picture 3'rd Quarter)
+                row = 3
+
+            # UAV (Column Player) strategies
+            if x_err > 0 and y_err < 0: # L U
+                col = 0
+            elif x_err > 0 and y_err > 0: # L D
+                col = 1
+            elif x_err < 0 and y_err < 0: # R U
+                col = 2
+            elif x_err < 0 and y_err > 0: # R D
+                col = 3
+
+            self.LeftPlayer[row, col] = sqrt(camPsi**2 + camTheta**2)
+            self.RightPlayer[row, col] = sqrt(uavPsi**2 + uavTheta**2)
+            self.L_Theta[row, col] = atan(camTheta/camPsi)
+            self.R_Theta[row, col] = atan(uavTheta/uavPsi)
+            # Leaf Algorithm
+            self.BackwardInduction(self.LeftPlayer, self.RightPlayer, 1)
+            l1 = self.BI[0]
+            r1 = self.BI[1]
+            self.BackwardInduction(self.LeftPlayer, self.RightPlayer, 2)
+            l2 = self.BI[0]
+            r2 = self.BI[1]
+
+            if (sqrt( self.LeftPlayer[int(l1), int(r1)]**2 + self.RightPlayer[int(l1), int(r1)]**2 ) <
+                sqrt( self.LeftPlayer[int(l2), int(r2)]**2 + self.RightPlayer[int(l2), int(r2)]**2 )):
+                # Left Player (Camera) is optimal leader
+                self.cam_psi = self.LeftPlayer[int(l1), int(r1)] * cos(self.L_Theta[int(l1), int(r1)])
+                self.cam_theta = self.LeftPlayer[int(l1), int(r1)] * sin(self.L_Theta[int(l1), int(r1)])
+            else:
+                # Right Player (UAV) is optimal leader
+                self.uav_psi = self.RightPlayer[int(l2), int(r2)] * cos(self.R_Theta[int(l2), int(r2)])
+                self.uav_theta = self.RightPlayer[int(l2), int(r2)] * sin(self.R_Theta[int(l2), int(r2)])
+
+        elif self.method == 'Game theory 2':
+
+            # Camera (Row Player) strategies
+            if x_err > 0 and y_err < 0: # L U (Picture 1'st Quarter)
+                row = 0
+            elif x_err > 0 and y_err > 0: # L D (Picture 4'th Quarter)
+                row = 1
+            elif x_err < 0 and y_err < 0: # R U (Picture 2'nd Quarter)
+                row = 2
+            elif x_err < 0 and y_err > 0: # R D (Picture 3'rd Quarter)
+                row = 3
+
+            # UAV (Column Player) strategies
+            if x_err > 0 and y_err < 0: # L U
+                col = 0
+            elif x_err > 0 and y_err > 0: # L D
+                col = 1
+            elif x_err < 0 and y_err < 0: # R U
+                col = 2
+            elif x_err < 0 and y_err > 0: # R D
+                col = 3
+
+            self.LeftPlayer[row, col] = sqrt(camPsi**2 + camTheta**2)
+            self.RightPlayer[row, col] = sqrt(uavPsi**2 + uavTheta**2)
+            self.L_Theta[row, col] = atan(camTheta/camPsi)
+            self.R_Theta[row, col] = atan(uavTheta/uavPsi)
+
+            V_P1 = np.amin(np.amax(self.LeftPlayer, axis=0))
+            Loc_P1 = np.argmin(np.argmax(self.LeftPlayer, axis=0))
+            V_P2 = np.amin(np.amax(self.RightPlayer, axis=1))
+            Loc_P2 = np.argmin(np.argmax(self.RightPlayer, axis=1))
+            adloc_P1 = Loc_P1
+            adloc_P2 = Loc_P2
+
+            # Using admissible Nash equilibrium in case of different equilibriums
+            if self.LeftPlayer[Loc_P1, Loc_P2] != V_P1 and self.RightPlayer[Loc_P1, Loc_P2] != V_P2:
+                if V_P1 < V_P2:
+                    for k in range(4):
+                        if self.LeftPlayer[Loc_P1, k] == V_P1:
+                            V_P2 = self.RightPlayer[Loc_P1, k]
+                            adloc_P2 = k
+                elif V_P2 < V_P1:
+                    for k in range(4):
+                        if self.RightPlayer[k, Loc_P2] == V_P2:
+                            V_P1 = self.LeftPlayer[k, Loc_P2]
+                            adloc_P1 = k
+
+            self.cam_psi = self.LeftPlayer[Loc_P1, Loc_P2] * cos(self.L_Theta[Loc_P1, Loc_P2])
+            self.cam_theta = self.LeftPlayer[Loc_P1, Loc_P2] * sin(self.L_Theta[Loc_P1, Loc_P2])
+            self.uav_psi = self.RightPlayer[Loc_P1, Loc_P2] * cos(self.R_Theta[Loc_P1, Loc_P2])
+            self.uav_theta = self.RightPlayer[Loc_P1, Loc_P2] * sin(self.R_Theta[Loc_P1, Loc_P2])
+
+
 if __name__ == '__main__':
     rospy.init_node('Offboard_control_node', anonymous=True)
-    
-    tracker = Tracker()
 
+    tracker = Tracker()
+    dm = DecisionMaking()
+    # UAV constants
+    Yaw_min = -90.0
+    Yaw_max = 90.0
+    Pitch_min = -35.0
+    Pitch_max = 35.0
+    # Camera constants
+    Pan_min = -75.0
+    Pan_max = 75.0
+    Tilt_min = -90.0
+    Tilt_max = 30.0
+
+    step = 0.0
     loop = rospy.Rate(20)
 
     while not rospy.is_shutdown():
-
+        step += 1
         """
         # Example of how to use the PositionController
 
         K = PositionController() # Should be created outside ROS while loop
-        
+
         # The following should be inside ROS while loop
         # update errors
         K.ex_ = relative_position_in_x # body directions
@@ -544,7 +870,50 @@ if __name__ == '__main__':
 
         """
         tracker.computeControlOutput()
+#################################################################################################
+        if tracker.tagpxl_.valid:
+            X_Err = tracker.tagpxl_.p_image[0] - tracker.tagpxl_.x_c # Horizontal Error
+            Y_Err = tracker.tagpxl_.p_image[1] - tracker.tagpxl_.y_c # Vertical Error
+            X_ratio = X_Err / tracker.tagpxl_.width
+            Y_ratio = Y_Err / tracker.tagpxl_.height
+#################################################################################################
+            UAV_PSI = X_ratio * (Yaw_max - Yaw_min)
+            if UAV_PSI > Yaw_max:
+                UAV_PSI = Yaw_max
+            elif UAV_PSI < Yaw_min:
+                UAV_PSI = Yaw_min
+#################################################################################################
+            UAV_THETA = Y_ratio * (Pitch_max - Pitch_min)
+            if UAV_THETA > Pitch_max:
+                UAV_THETA = Pitch_max
+            elif UAV_THETA < Pitch_min:
+                UAV_THETA = Pitch_min
+#################################################################################################
+            CAM_PSI = X_ratio * (Pan_max - Pan_min)
+            if CAM_PSI > Pan_max:
+                CAM_PSI = Pan_max
+            elif CAM_PSI < Pan_min:
+                CAM_PSI = Pan_min
+#################################################################################################
+            CAM_THETA = Y_ratio * (Tilt_max - Tilt_min)
+            if CAM_THETA > Tilt_max:
+                CAM_THETA = Tilt_max
+            elif CAM_THETA < Tilt_min:
+                CAM_THETA = Tilt_min
+#################################################################################################
+            dm.method = 'Game theory 2'
+            dm.decision(UAV_PSI, UAV_THETA, CAM_PSI, CAM_THETA, X_Err, Y_Err)
+#################################################################################################
+            tracker.commander_.yaw_setpoint_ = dm.uav_psi
+            if step % 20 == 0:
+                tracker.commander_.pos_setpoint_.z += sqrt((tracker.tagpxl_.pos_x**2) +
+                                                           (tracker.tagpxl_.pos_y**2) +
+                                                           (tracker.tagpxl_.pos_z**2)) * sin(dm.uav_theta)
+            tracker.commander_.cam_yaw_setpoint_ = dm.cam_psi
+            tracker.commander_.cam_pitch_setpoint_ = dm.cam_theta
+#################################################################################################
         tracker.commander_.publishSetpoint()
+        tracker.commander_.publishCamSetpoint()
         tracker.publishErrorSignals()
-        #cmd.publishSetpoint()
+        # cmd.publishSetpoint()
         loop.sleep()
