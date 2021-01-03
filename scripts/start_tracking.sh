@@ -8,7 +8,8 @@ z: 4.0"
 
 # Bring camera down
 echo "Bringing camera down ..."
-rostopic pub --once /mavros/mount_control/command mavros_msgs/MountControl "header:
+rostopic pub --once /mavros/mount_control/command mavros_msgs/MountControl "
+header:
   seq: 0
   stamp: {secs: 0, nsecs: 0}
   frame_id: ''
@@ -26,16 +27,9 @@ echo "Arming and setting OFFBOARD mode ..."
 rosservice call /arm_and_offboard "{}"
 
 # Give some time for the drone to go over the tag
-echo "Sleeping 5 seconds to give the drone time to takeoff"
-sleep 5
+echo "Sleeping 10 seconds to give the drone time to takeoff"
+sleep 10
 
 # Move the Husky
 echo "Moving the Husky ..."
-rostopic pub -r 10 /husky_velocity_controller/cmd_vel geometry_msgs/Twist "linear:
-  x: 1.0
-  y: 0.0
-  z: 0.0
-angular:
-  x: 0.0
-  y: 0.0
-  z: 0.4"
+rosrun mavros_apriltag_tracking zigzag
