@@ -45,9 +45,10 @@ from mavros_msgs.msg import MountControl
 from apriltag_ros.msg import AprilTagDetectionArray
 from image_geometry import PinholeCameraModel
 from sensor_msgs.msg import CameraInfo
-
+from nav_msgs.msg import Odometry
 import numpy as np
-
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
 class FCUModes:
     def __init__(self):
@@ -266,6 +267,11 @@ class Commander:
         self.cam_roll_setpoint_ = 0.0
         self.cam_yaw_setpoint_ = 0.0
 
+        # Husky position
+        self.husky_x_ = 0.0
+        self.husky_y_ = 0.0
+        self.husky_z_ = 0.0
+
         # Current drone position (local frame)
         self.drone_pos_ = Point()
 
@@ -298,6 +304,9 @@ class Commander:
 
         # Subscriber to local velocity
         rospy.Subscriber('mavros/local_position/velocity_local', TwistStamped, self.localVelCallback)
+
+        # Subscriber to Husky position
+        rospy.Subscriber('husky_velocity_controller/odom', Odometry, self.huskyPosSpCallback)
 
         # Service for arming and setting OFFBOARD flight mode
         rospy.Service('arm_and_offboard', Empty, self.armAndOffboard)
@@ -427,6 +436,11 @@ class Commander:
         self.cam_setpoint_.yaw = self.cam_yaw_setpoint_
 
         self.cam_setpoint_pub_.publish(self.cam_setpoint_)
+
+    def huskyPosSpCallback(self, msg):
+        self.husky_x_ = msg.pose.pose.position.x
+        self.husky_y_ = msg.pose.pose.position.y
+        self.husky_z_ = msg.pose.pose.position.z
 #####################################################################################
 """
 """
@@ -600,7 +614,7 @@ class Tracker:
 
 class DecisionMaking:
     def __init__(self):
-        self.method = 'No Game theory'
+        self.method = 'Without Game theory'
         self.uav_psi = 0.0
         self.uav_theta = 0.0
         self.cam_psi = 0.0
@@ -730,13 +744,13 @@ class DecisionMaking:
             self.BI = Nextindex1[7, :]
 
     def decision(self, uavPsi, uavTheta, camPsi, camTheta, x_err, y_err):
-        if self.method == 'No Game theory':
+        if self.method == 'Without Game theory':
             self.uav_psi = uavPsi
             self.uav_theta = uavTheta
             self.cam_psi = camPsi
             self.cam_theta = camTheta
 
-        elif self.method == 'Game theory 1':
+        elif self.method == 'First Algorithm':
             # Camera (Row Player) strategies
             if x_err > 0 and y_err < 0: # L U (Picture 1'st Quarter)
                 row = 0
@@ -779,7 +793,7 @@ class DecisionMaking:
                 self.uav_psi = self.RightPlayer[int(l2), int(r2)] * cos(self.R_Theta[int(l2), int(r2)])
                 self.uav_theta = self.RightPlayer[int(l2), int(r2)] * sin(self.R_Theta[int(l2), int(r2)])
 
-        elif self.method == 'Game theory 2':
+        elif self.method == 'Second Algorithm':
 
             # Camera (Row Player) strategies
             if x_err > 0 and y_err < 0: # L U (Picture 1'st Quarter)
@@ -831,9 +845,132 @@ class DecisionMaking:
             self.uav_psi = self.RightPlayer[Loc_P1, Loc_P2] * cos(self.R_Theta[Loc_P1, Loc_P2])
             self.uav_theta = self.RightPlayer[Loc_P1, Loc_P2] * sin(self.R_Theta[Loc_P1, Loc_P2])
 
+    def saver(self):
+        np.savetxt('/home/hamid/catkin_ws/Husky_X.csv', Husky_X, delimiter=",")
+        np.savetxt('/home/hamid/catkin_ws/Husky_Y.csv', Husky_Y, delimiter=",")
+        np.savetxt('/home/hamid/catkin_ws/Husky_Z.csv', Husky_Z, delimiter=",")
 
+        np.savetxt('/home/hamid/catkin_ws/Drone_X.csv', Drone_X, delimiter=",")
+        np.savetxt('/home/hamid/catkin_ws/Drone_Y.csv', Drone_Y, delimiter=",")
+        np.savetxt('/home/hamid/catkin_ws/Drone_Z.csv', Drone_Z, delimiter=",")
+
+        np.savetxt('/home/hamid/catkin_ws/Drone_Yaw.csv', Drone_Yaw, delimiter=",")
+        np.savetxt('/home/hamid/catkin_ws/Drone_Pitch.csv', Drone_Pitch, delimiter=",")
+
+        np.savetxt('/home/hamid/catkin_ws/Cam_Yaw.csv', Cam_Yaw, delimiter=",")
+        np.savetxt('/home/hamid/catkin_ws/Cam_Pitch.csv', Cam_Pitch, delimiter=",")
+
+        np.savetxt('/home/hamid/catkin_ws/Sim_time.csv', Sim_time, delimiter=",")
+        np.savetxt('/home/hamid/catkin_ws/Sim_time_ERR.csv', Sim_time_ERR, delimiter=",")
+
+        np.savetxt('/home/hamid/catkin_ws/X_err_tmp.csv', X_err_tmp, delimiter=",")
+        np.savetxt('/home/hamid/catkin_ws/Y_err_tmp.csv', Y_err_tmp, delimiter=",")
+    #################################################################################################
+        fig = plt.figure(dpi=300)
+        # fig.set_size_inches(19.2, 10.8)
+        ax = fig.gca(projection='3d')
+        ax.plot(Husky_X, Husky_Y, np.zeros(np.shape(Husky_X)), label='UGV Trajectory')
+        ax.plot(Drone_X, Drone_Y, Drone_Z, label='UAV Trajectory')
+        ax.legend()
+        # ax.set_xlim(0, 20)
+        # ax.set_ylim(0, 20)
+        ax.set_zlim(0, 20)
+        ax.set_xlabel('X (m)')
+        ax.set_ylabel('Y (m)')
+        ax.set_zlabel('Z (m)')
+        ax.set_title(self.method)
+        ax.view_init(20, -120)
+        fig.tight_layout()
+        plt.savefig('/home/hamid/catkin_ws/' + self.method + '.png')
+        plt.savefig('/home/hamid/catkin_ws/' + self.method + '.eps')
+        ax.view_init(0, 0)
+        fig.tight_layout()
+        plt.savefig('/home/hamid/catkin_ws/' + self.method + '00.png')
+        plt.savefig('/home/hamid/catkin_ws/' + self.method + '00.eps')
+        ax.view_init(0, 90)
+        fig.tight_layout()
+        plt.savefig('/home/hamid/catkin_ws/' + self.method + '090.png')
+        plt.savefig('/home/hamid/catkin_ws/' + self.method + '090.eps')
+        ax.view_init(0, 180)
+        fig.tight_layout()
+        plt.savefig('/home/hamid/catkin_ws/' + self.method + '0180.png')
+        plt.savefig('/home/hamid/catkin_ws/' + self.method + '0180.eps')
+        ax.view_init(90, 0)
+        fig.tight_layout()
+        plt.savefig('/home/hamid/catkin_ws/' + self.method + '900.png')
+        plt.savefig('/home/hamid/catkin_ws/' + self.method + '900.eps')
+        ax.view_init(90, 90)
+        fig.tight_layout()
+        plt.savefig('/home/hamid/catkin_ws/' + self.method + '9090.png')
+        plt.savefig('/home/hamid/catkin_ws/' + self.method + '9090.eps')
+        ax.view_init(90, 180)
+        fig.tight_layout()
+        plt.savefig('/home/hamid/catkin_ws/' + self.method + '90180.png')
+        plt.savefig('/home/hamid/catkin_ws/' + self.method + '90180.eps')
+    #################################################################################################
+        fig1 = plt.figure(dpi=300)
+        ax1 = fig1.gca()
+        ax1.plot(Sim_time, Cam_Yaw)
+        ax1.set_xlabel('Time (sec)')
+        ax1.set_ylabel('$Camera_{\psi}$ (degrees)')
+        ax1.set_title(self.method)
+        fig1.tight_layout()
+        plt.savefig('/home/hamid/catkin_ws/Cam_Yaw.png')
+        plt.savefig('/home/hamid/catkin_ws/Cam_Yaw.eps')
+
+        fig2 = plt.figure(dpi=300)
+        ax2 = fig2.gca()
+        ax2.plot(Sim_time, Cam_Pitch)
+        ax2.set_xlabel('Time (sec)')
+        ax2.set_ylabel(r'$Camera_{\theta}$ (degrees)')
+        ax2.set_title(self.method)
+        fig2.tight_layout()
+        plt.savefig('/home/hamid/catkin_ws/Cam_Pitch.png')
+        plt.savefig('/home/hamid/catkin_ws/Cam_Pitch.eps')
+
+        fig3 = plt.figure(dpi=300)
+        ax3 = fig3.gca()
+        ax3.plot(Sim_time, Drone_Yaw)
+        ax3.set_xlabel('Time (sec)')
+        ax3.set_ylabel('$UAV_{\psi}$ (degrees)')
+        ax3.set_title(self.method)
+        fig3.tight_layout()
+        plt.savefig('/home/hamid/catkin_ws/UAV_Yaw.png')
+        plt.savefig('/home/hamid/catkin_ws/UAV_Yaw.eps')
+
+        fig4 = plt.figure(dpi=300)
+        ax4 = fig4.gca()
+        ax4.plot(Sim_time, Drone_Pitch)
+        ax4.set_xlabel('Time (sec)')
+        ax4.set_ylabel(r'$UAV_{\theta}$ (degrees)')
+        ax4.set_title(self.method)
+        fig4.tight_layout()
+        plt.savefig('/home/hamid/catkin_ws/UAV_Pitch.png')
+        plt.savefig('/home/hamid/catkin_ws/UAV_Pitch.eps')
+
+        fig5 = plt.figure(dpi=300)
+        ax5 = fig5.gca()
+        ax5.plot(Sim_time_ERR, X_err_tmp)
+        ax5.set_xlabel('Time (sec)')
+        ax5.set_ylabel('$Error_x$ (pixels)')
+        ax5.set_title(self.method)
+        fig5.tight_layout()
+        plt.savefig('/home/hamid/catkin_ws/X_Err.png')
+        plt.savefig('/home/hamid/catkin_ws/X_Err.eps')
+
+        fig6 = plt.figure(dpi=300)
+        ax6 = fig6.gca()
+        ax6.plot(Sim_time_ERR, Y_err_tmp)
+        ax6.set_xlabel('Time (sec)')
+        ax6.set_ylabel('$Error_y$ (pixels)')
+        ax6.set_title(self.method)
+        fig6.tight_layout()
+        plt.savefig('/home/hamid/catkin_ws/Y_Err.png')
+        plt.savefig('/home/hamid/catkin_ws/Y_Err.eps')
+#################################################################################################
 if __name__ == '__main__':
     rospy.init_node('Offboard_control_node', anonymous=True)
+
 
     tracker = Tracker()
     dm = DecisionMaking()
@@ -851,7 +988,28 @@ if __name__ == '__main__':
     step = 0.0
     loop = rospy.Rate(20)
 
+    Husky_X = []
+    Husky_Y = []
+    Husky_Z = []
+
+    Drone_X = []
+    Drone_Y = []
+    Drone_Z = []
+
+    Drone_Yaw = []
+    Drone_Pitch = []
+
+    Cam_Yaw = []
+    Cam_Pitch = []
+
+    Sim_time = []
+    Sim_time_ERR = []
+
+    X_err_tmp = []
+    Y_err_tmp = []
+
     while not rospy.is_shutdown():
+
         step += 1
         """
         # Example of how to use the PositionController
@@ -901,19 +1059,41 @@ if __name__ == '__main__':
             elif CAM_THETA < Tilt_min:
                 CAM_THETA = Tilt_min
 #################################################################################################
-            dm.method = 'Game theory 2'
+            dm.method = 'Second Algorithm'
             dm.decision(UAV_PSI, UAV_THETA, CAM_PSI, CAM_THETA, X_Err, Y_Err)
 #################################################################################################
             tracker.commander_.yaw_setpoint_ = dm.uav_psi
             if step % 20 == 0:
-                tracker.commander_.pos_setpoint_.z += sqrt((tracker.tagpxl_.pos_x**2) +
+                tracker.commander_.drone_pos_.z += sqrt((tracker.tagpxl_.pos_x**2) +
                                                            (tracker.tagpxl_.pos_y**2) +
                                                            (tracker.tagpxl_.pos_z**2)) * sin(dm.uav_theta)
             tracker.commander_.cam_yaw_setpoint_ = dm.cam_psi
             tracker.commander_.cam_pitch_setpoint_ = dm.cam_theta
+
+            X_err_tmp = np.append(X_err_tmp, X_Err)
+            Y_err_tmp = np.append(Y_err_tmp, Y_Err)
+            Sim_time_ERR = np.append(Sim_time_ERR, rospy.get_time())
+#################################################################################################
+        Husky_X = np.append(Husky_X, tracker.commander_.husky_x_)
+        Husky_Y = np.append(Husky_Y, tracker.commander_.husky_y_)
+        Husky_Z = np.append(Husky_Z, tracker.commander_.husky_z_)
+
+        Drone_X = np.append(Drone_X, tracker.commander_.drone_pos_.x)
+        Drone_Y = np.append(Drone_Y, tracker.commander_.drone_pos_.y)
+        Drone_Z = np.append(Drone_Z, tracker.commander_.drone_pos_.z)
+
+        Drone_Yaw = np.append(Drone_Yaw, tracker.commander_.yaw_setpoint_)
+        Drone_Pitch = np.append(Drone_Pitch, dm.uav_theta)
+
+        Cam_Yaw = np.append(Cam_Yaw, tracker.commander_.cam_yaw_setpoint_)
+        Cam_Pitch = np.append(Cam_Pitch, tracker.commander_.cam_pitch_setpoint_)
+
+        Sim_time = np.append(Sim_time, rospy.get_time())
 #################################################################################################
         tracker.commander_.publishSetpoint()
         tracker.commander_.publishCamSetpoint()
         tracker.publishErrorSignals()
         # cmd.publishSetpoint()
+        rospy.on_shutdown(dm.saver)
         loop.sleep()
+#################################################################################################

@@ -8,7 +8,7 @@ class test_pf
  public:
 test_pf(ros::NodeHandle & n_) : n(n_)
 {
-    vel_pub = n.advertise<geometry_msgs::Twist>("/husky_velocity_controller/cmd_vel", 100);
+    vel_pub = n.advertise<geometry_msgs::Twist>("/husky_velocity_controller/cmd_vel", 30);
 };
 
 void move(double val)
@@ -53,27 +53,27 @@ ros::Rate loop_rate(50);
 test_pf move_robot_obj(n);
 
        while(ros::ok()) {
-            for (int i=0 ;i <99999; i++)
+            for (int i=0 ;i <3000000; i++)
         {
             std::cout << "turn left" << std::endl ;
             move_robot_obj.turn(1.2);
         }
         loop_rate.sleep();
 
-        for (int i=0 ;i <99999; i++)
+        for (int i=0 ;i <2000000; i++)
         {
             std::cout << "move forward" << std::endl ;
               move_robot_obj.move(1.0);
         }
         loop_rate.sleep();
-        for (int i=0 ;i <99999; i++)
+        for (int i=0 ;i <3000000; i++)
         {
             std::cout << "turn right" << std::endl ;
             move_robot_obj.turn(-1.2);
         }
         loop_rate.sleep();
 
-        for (int i=0 ;i <99999; i++)
+        for (int i=0 ;i <2000000; i++)
         {
             std::cout << "move forward" << std::endl ;
             move_robot_obj.move(1.0);
