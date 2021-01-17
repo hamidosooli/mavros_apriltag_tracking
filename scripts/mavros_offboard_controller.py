@@ -874,7 +874,7 @@ class DecisionMaking:
         ax.legend()
         # ax.set_xlim(0, 20)
         # ax.set_ylim(0, 20)
-        ax.set_zlim(0, 20)
+        # ax.set_zlim(0, 5)
         ax.set_xlabel('X (m)')
         ax.set_ylabel('Y (m)')
         ax.set_zlabel('Z (m)')
@@ -1032,6 +1032,17 @@ if __name__ == '__main__':
         if tracker.tagpxl_.valid:
             X_Err = tracker.tagpxl_.p_image[0] - tracker.tagpxl_.x_c # Horizontal Error
             Y_Err = tracker.tagpxl_.p_image[1] - tracker.tagpxl_.y_c # Vertical Error
+
+            if tracker.tagpxl_.width < X_Err:
+                X_Err = tracker.tagpxl_.width
+            elif X_Err < -tracker.tagpxl_.width:
+                X_Err = tracker.tagpxl_.width
+
+            if tracker.tagpxl_.height < Y_Err:
+                Y_Err = tracker.tagpxl_.height
+            elif Y_Err < -tracker.tagpxl_.height:
+                Y_Err = tracker.tagpxl_.height
+
             X_ratio = X_Err / tracker.tagpxl_.width
             Y_ratio = Y_Err / tracker.tagpxl_.height
 #################################################################################################
@@ -1059,14 +1070,15 @@ if __name__ == '__main__':
             elif CAM_THETA < Tilt_min:
                 CAM_THETA = Tilt_min
 #################################################################################################
+            # dm.method = 'Without Game theory'
+            # dm.method = 'First Algorithm'
             dm.method = 'Second Algorithm'
             dm.decision(UAV_PSI, UAV_THETA, CAM_PSI, CAM_THETA, X_Err, Y_Err)
 #################################################################################################
             tracker.commander_.yaw_setpoint_ = dm.uav_psi
-            if step % 20 == 0:
-                tracker.commander_.drone_pos_.z += sqrt((tracker.tagpxl_.pos_x**2) +
-                                                           (tracker.tagpxl_.pos_y**2) +
-                                                           (tracker.tagpxl_.pos_z**2)) * sin(dm.uav_theta)
+            tracker.commander_.drone_pos_.z = np.abs(sqrt((tracker.tagpxl_.pos_x**2) +
+                                                          (tracker.tagpxl_.pos_y**2) +
+                                                          (tracker.tagpxl_.pos_z**2)) * sin(dm.uav_theta))
             tracker.commander_.cam_yaw_setpoint_ = dm.cam_psi
             tracker.commander_.cam_pitch_setpoint_ = dm.cam_theta
 

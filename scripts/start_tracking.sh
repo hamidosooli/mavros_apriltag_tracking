@@ -27,12 +27,12 @@ echo "Arming and setting OFFBOARD mode ..."
 rosservice call /arm_and_offboard "{}"
 
 # Give some time for the drone to go over the tag
-echo "Sleeping 15 seconds to give the drone time to takeoff"
-sleep 15
+echo "Sleeping 10 seconds to give the drone time to takeoff"
+sleep 10
 
 # Move the Husky
 echo "Moving the Husky ..."
-rosrun mavros_apriltag_tracking zigzag
+# rosrun mavros_apriltag_tracking zigzag
 
 # ROSbag for Husky
-# rosbag play Husky_cmd_vel.bag
+rosbag play /home/hamid/catkin_ws/src/Husky_cmd_vel.bag
