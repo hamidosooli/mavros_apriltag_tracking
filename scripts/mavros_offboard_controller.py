@@ -869,7 +869,7 @@ class DecisionMaking:
         fig = plt.figure(dpi=300)
         # fig.set_size_inches(19.2, 10.8)
         ax = fig.gca(projection='3d')
-        ax.plot(Husky_X, Husky_Y, np.zeros(np.shape(Husky_X)), label='UGV Trajectory')
+        ax.plot(Husky_X, Husky_Y, Husky_Z, label='UGV Trajectory')
         ax.plot(Drone_X, Drone_Y, Drone_Z, label='UAV Trajectory')
         ax.legend()
         # ax.set_xlim(0, 20)
@@ -1070,15 +1070,15 @@ if __name__ == '__main__':
             elif CAM_THETA < Tilt_min:
                 CAM_THETA = Tilt_min
 #################################################################################################
-            # dm.method = 'Without Game theory'
+            dm.method = 'Without Game theory'
             # dm.method = 'First Algorithm'
-            dm.method = 'Second Algorithm'
+            # dm.method = 'Second Algorithm'
             dm.decision(UAV_PSI, UAV_THETA, CAM_PSI, CAM_THETA, X_Err, Y_Err)
 #################################################################################################
             tracker.commander_.yaw_setpoint_ = dm.uav_psi
-            tracker.commander_.drone_pos_.z = np.abs(sqrt((tracker.tagpxl_.pos_x**2) +
-                                                          (tracker.tagpxl_.pos_y**2) +
-                                                          (tracker.tagpxl_.pos_z**2)) * sin(dm.uav_theta))
+            tracker.commander_.drone_pos_.z += sqrt((tracker.tagpxl_.pos_x**2) +
+                                                    (tracker.tagpxl_.pos_y**2) +
+                                                    (tracker.tagpxl_.pos_z**2)) * sin(dm.uav_theta)
             tracker.commander_.cam_yaw_setpoint_ = dm.cam_psi
             tracker.commander_.cam_pitch_setpoint_ = dm.cam_theta
 
